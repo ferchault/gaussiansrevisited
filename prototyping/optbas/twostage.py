@@ -1,16 +1,9 @@
 #!/usr/bin/env python
-# usage: python general.py [Number s primitives] [Number p primitives] ...
-from multiprocessing.sharedctypes import Value
-import site
 import pyscf.gto
 import pyscf.scf
 import scipy.optimize as sco
 import numpy as np
-import sys
-import json
 import click
-
-# JSON output, fix warning, make system independent per atom basis set^
 
 
 class Molecule:
@@ -51,14 +44,28 @@ class Molecule:
 
     def first_to_second(self, x0):
         # todo
+        self._skeleton_basis = self._tempered_to_basis(x0)
         self._is_tempered = False
+        guess = []
+        for atomtype in sorted(self._skeleton_basis.keys()):
+            guess += [_[1][0] for _ in self._skeleton_basis[atomtype]]
+        return guess
 
     def _get_basis(self, basis):
         if type(basis) == str:
             return basis
         if self._is_tempered:
             return self._tempered_to_basis(basis)
-        raise ValueError("dang")
+        else:
+            return self._relaxed_to_basis(basis)
+
+    def _relaxed_to_basis(self, basis):
+        basisspec = self._skeleton_basis.copy()
+        basis = list(basis)
+        for atomtype in sorted(basisspec.keys()):
+            for nprimitive in range(len(basisspec[atomtype])):
+                basisspec[atomtype][nprimitive][1][0] = basis.pop()
+        return basisspec
 
     def evaluate(self, basis) -> float:
         basis = self._get_basis(basis)
@@ -94,32 +101,13 @@ class Molecule:
 
             for l, N in zip(range(nl), angular):
                 alpha, beta = subset[l * 2 : l * 2 + 2]
-                site_basis += to_basis(even_tempered(l, alpha, beta, N), [l] * N)
+                even_tempered = alpha * beta ** np.arange(1, N + 1)
+                site_basis += [
+                    [N, [exponent, 1]] for exponent, N in zip(even_tempered, [l] * N)
+                ]
 
             basis[atomtype] = site_basis
         return basis
-
-
-def even_tempered(l: int, alpha: float, beta: float, N: int):
-    return alpha * beta ** np.arange(1, N + 1)
-
-
-def to_basis(exponents, Ns) -> list:
-    return [[N, [exponent, 1]] for exponent, N in zip(exponents, Ns)]
-
-
-# def relaxed_to_bas(exponents, angular):
-#     return [[ang, [exponent, 1]] for exponent, ang in zip(exponents, angular)]
-
-
-# def first_stage(tempered: list, system: Molecule) -> float:
-#     """Simple optimization target."""
-#     return system.evaluate(tempered_to_basis(tempered))
-
-
-# def second_stage(x0, angular, atomspec):
-#     """Simple optimization target."""
-#     return do_mol(atomspec, {"Be": relaxed_to_bas(x0, angular)})
 
 
 @click.command()
@@ -148,41 +136,10 @@ def twostage(atomspec, basisspec):
     print(system._tempered_to_basis(res.x))
 
     # second stage: relax all coefficients from there
-    # guess = system.first_to_second(res.fun)
-    # res = sco.minimize(second_stage, guess, args=(system,))
-    # print(f"Second stage: {res.fun}")
-    # print(free_to_basis(res.x, system))
-
-    # try:
-    #     # init
-    #     args = [int(_) for _ in sys.argv[1:]]
-    #     x0 = [400, 0.2] * len(args)
-
-    #     # first stage
-    #     res = sco.minimize(first_stage, x0, args=(args,atomspec))
-    #     print("Basis set")
-    #     basis = tempered_to_bas(res.x, args)
-    #     print(basis)
-    #     print("Error to CBS [Ha]")
-    #     print(res.fun - CBS)
-
-    #     # second stage
-    #     angular = [_[0] for _ in basis]
-    #     exponents = [_[1][0] for _ in basis]
-    #     print (relaxed_to_bas(exponents, angular))
-    #     res = sco.minimize(second_stage, exponents, args=(angular,atomspec))
-    #     print ("Basis set")
-    #     print (relaxed_to_bas(res.x, angular))
-    #     print ("Error to CBS [Ha]")
-    #     print (res.fun - CBS)
-    # except:
-    #     basis = sys.argv[1]
-    #     print("Contracted", do_mol(basis) - CBS)
-    #     print(
-    #         "Uncontracted",
-    #         do_mol({"Be": pyscf.gto.uncontract(pyscf.gto.basis.load(basis, "Be"))})
-    #         - CBS,
-    #     )
+    guess = system.first_to_second(res.x)
+    res = sco.minimize(lambda _: system.evaluate(_), guess)
+    print(f"Second stage: {res.fun}")
+    print(system._get_basis(res.x))
 
 
 if __name__ == "__main__":
