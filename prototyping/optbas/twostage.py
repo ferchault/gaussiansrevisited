@@ -5,6 +5,10 @@ import scipy.optimize as sco
 import numpy as np
 import click
 
+import warnings
+
+warnings.filterwarnings("ignore")
+
 
 class Molecule:
     atomspec: str
@@ -39,25 +43,14 @@ class Molecule:
         for element in self.elements:
             guess += [400, 0.2] * sum(self.basisspec[element])
 
-        self._is_tempered = True
         return guess
 
     def first_to_second(self, x0):
-        # todo
         self._skeleton_basis = self._tempered_to_basis(x0)
-        self._is_tempered = False
         guess = []
         for atomtype in sorted(self._skeleton_basis.keys()):
             guess += [_[1][0] for _ in self._skeleton_basis[atomtype]]
         return guess
-
-    def _get_basis(self, basis):
-        if type(basis) == str:
-            return basis
-        if self._is_tempered:
-            return self._tempered_to_basis(basis)
-        else:
-            return self._relaxed_to_basis(basis)
 
     def _relaxed_to_basis(self, basis):
         basisspec = self._skeleton_basis.copy()
@@ -67,8 +60,16 @@ class Molecule:
                 basisspec[atomtype][nprimitive][1][0] = basis.pop()
         return basisspec
 
-    def evaluate(self, basis) -> float:
-        basis = self._get_basis(basis)
+    def evaluate_reference(self, basis) -> float:
+        return self._evaluate(basis)
+
+    def evaluate_tempered(self, basis) -> float:
+        return self._evaluate(self._tempered_to_basis(basis))
+
+    def evaluate_relaxed(self, basis) -> float:
+        return self._relaxed_to_basis(basis)
+
+    def _evaluate(self, basis) -> float:
         try:
             mol = pyscf.gto.M(
                 atom=self.atomspec,
@@ -126,18 +127,18 @@ def twostage(atomspec, basisspec):
 
     # reference calculations
     for basis in "D":
-        print(f"{basis} contracted:", system.evaluate(f"cc-pV{basis}Z"))
-        print(f"{basis} uncontracted:", system.evaluate(f"unc-cc-pV{basis}Z"))
+        print(f"{basis} contracted:", system.evaluate_reference(f"cc-pV{basis}Z"))
+        print(f"{basis} uncontracted:", system.evaluate_reference(f"unc-cc-pV{basis}Z"))
 
     # first stage: evenly tempered basis set guess
     guess = system.initial_guess()
-    res = sco.minimize(lambda _: system.evaluate(_), guess)
+    res = sco.minimize(lambda _: system.evaluate_tempered(_), guess)
     print(f"First stage: {res.fun}")
     print(system._tempered_to_basis(res.x))
 
     # second stage: relax all coefficients from there
     guess = system.first_to_second(res.x)
-    res = sco.minimize(lambda _: system.evaluate(_), guess)
+    res = sco.minimize(lambda _: system.evaluate_relaxed(_), guess)
     print(f"Second stage: {res.fun}")
     print(system._get_basis(res.x))
 
