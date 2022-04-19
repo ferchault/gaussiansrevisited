@@ -1,11 +1,23 @@
 #!/usr/bin/env python
-
-#%%
-import pyscf.scf
+# usage: python general.py [Number s primitives] [Number p primitives] ...
 import pyscf.gto
-import functools
+import pyscf.scf
+import scipy.optimize as sco
+import numpy as np
+import sys
+from typing import Iterable
+import json
 
-# %%
+#JSON output, fix warning, make system independent per atom basis set^
+
+def even_tempered(l: int, alpha: float, beta: float, N: int) -> np.ndarray[float]:
+    return alpha * beta ** np.arange(1, N + 1)
+
+
+def to_basis(exponents, Ns) -> Iterable:
+    return [[N, [exponent, 1]] for exponent, N in zip(exponents, Ns)]
+
+
 def do_mol(basis):
     try:
         mol = pyscf.gto.M(
@@ -17,86 +29,62 @@ def do_mol(basis):
         return 0
     calc = pyscf.scf.RHF(mol)
     try:
-        return calc.kernel()
+        e = calc.kernel()
+        if not calc.converged:
+            return 0
+        return e
     except:
         return 0
 
 
-# %%
-# mol = [2], [[0,0,0]]
-# get_floating_calculator(*mol, )
-# mol = pyscf.gto.M(atom=f"He 0 0 0", basis="def2-TZVP", verbose=0)
-def sto3g_like(*args):
+def tempered_to_bas(x0, Ns):
+    x0 = np.abs(x0)
+    nl = int(len(x0) / 2)
+    bas = []
+    for l, N in zip(range(nl), Ns):
+        alpha, beta = x0[l * 2 : l * 2 + 2]
+        bas += to_basis(even_tempered(l, alpha, beta, N), [l] * N)
+    return bas
 
-    a1, a2, a3, a4, a5, a6, a7, a8, a9, c1, c2, c3, c4, c5, c6 = args
+def relaxed_to_bas(exponents, angular):
+    return [[ang, [exponent, 1]] for exponent, ang in zip(exponents, angular)]
 
-    return [
-        [0, [a1, c1], [a2, c2], [a3, 1 - c1 - c2]],
-        [0, [a4, c3], [a5, c4], [a6, 1 - c3 - c4]],
-        [1, [a7, c5], [a8, c6], [a9, 1 - c5 - c6]],
-    ]
+def first_stage(x0, Ns):
+    return do_mol({"Be": tempered_to_bas(x0, Ns)})
 
-
-def sto3g_like(*args):
-
-    a1, a2, a3, a4, a5, a6, a7, a8, a9 = args
-
-    return [
-        [0, [a1, 1]],
-        [0, [a2, 1]],
-        [0, [a3, 1]],
-        [0, [a4, 1]],
-        [0, [a5, 1]],
-        [0, [a6, 1]],
-        [1, [a7, 1]],
-        [1, [a8, 1]],
-        [1, [a9, 1]],
-    ]
+def second_stage(x0, angular):
+    return do_mol({"Be": relaxed_to_bas(x0, angular)})
 
 
-# %%
-import scipy.optimize as sco
-import numpy as np
-
-
-def fun(_):
-    return do_mol({"Be": sto3g_like(*_)})
-
-
-x0 = (30.1, 5.5, 1.5, 1.3, 0.3, 0.1, 1.3, 0.3, 0.1, 0.1, 0.5, -0.1, 0.4, 0.15, 0.6)
-x0 = (
-    6.66118155e01,
-    1.00712830e01,
-    2.08456591e00,
-    1.63671151e01,
-    1.34538182e-01,
-    4.86391910e-02,
-    5.57089662e-02,
-    5.57089414e-02,
-    3.32125335e-01,
-    6.10807332e-02,
-    3.41683130e-01,
-    2.50465855e-02,
-    7.18503539e-01,
-    -2.63337289e-01,
-    8.85350521e-01,
-)
 if __name__ == "__main__":
-    bounds = [(0.001, 100)] * 9 + [(0, 1)] * 6
-    print("START", do_mol("STO-3G"))
+    CBS = -29.1341759449
+    try:
+        # init
+        args = [int(_) for _ in sys.argv[1:]]
+        x0 = [400, 0.2] * len(args)
 
-    def callback(xk, convergence=None):
-        print(do_mol(sto3g_like(*xk)))
+        # first stage
+        res = sco.minimize(first_stage, x0, args=(args,))
+        print("Basis set")
+        basis = tempered_to_bas(res.x, args)
+        print(basis)
+        print("Error to CBS [Ha]")
+        print(res.fun - CBS)
 
-    # sco.differential_evolution(fun, bounds=bounds, callback=callback, workers=-1)
-
-    result = sco.minimize(fun, x0=x0[:9], callback=callback)
-    print(result)
-    # result = sco.minimize(
-    #     fun, x0=x0 + np.random.random(size=len(x0)) * 0.2, callback=callback
-    # )
-    # print(result)
-    # sco.minimize: -28.923121551758687
-    # sco.DE: -28.85997709582355
-
-# %%
+        # second stage
+        angular = [_[0] for _ in basis]
+        exponents = [_[1][0] for _ in basis]
+        print (relaxed_to_bas(exponents, angular))
+        res = sco.minimize(second_stage, exponents, args=(angular,))
+        print ("Basis set")
+        print (relaxed_to_bas(res.x, angular))
+        print ("Error to CBS [Ha]")
+        print (res.fun - CBS)
+    except:
+        basis = sys.argv[1]
+        print("Contracted", do_mol(basis) - CBS)
+        print(
+            "Uncontracted",
+            do_mol({"Be": pyscf.gto.uncontract(pyscf.gto.basis.load(basis, "Be"))})
+            - CBS,
+        )
