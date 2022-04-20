@@ -4,7 +4,10 @@ import pyscf.scf
 import scipy.optimize as sco
 import numpy as np
 import click
-
+import json
+from concurrent import futures
+import os
+import nevergrad as ng
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -41,7 +44,7 @@ class Molecule:
         """Guess for the first stage. Informed by empirical values."""
         guess = []
         for element in self.elements:
-            guess += [400, 0.2] * sum(self.basisspec[element])
+            guess += [400, 0.3] * sum(self.basisspec[element])
 
         return guess
 
@@ -67,7 +70,7 @@ class Molecule:
         return self._evaluate(self._tempered_to_basis(basis))
 
     def evaluate_relaxed(self, basis) -> float:
-        return self._relaxed_to_basis(basis)
+        return self._evaluate(self._relaxed_to_basis(basis))
 
     def _evaluate(self, basis) -> float:
         try:
@@ -124,23 +127,35 @@ class Molecule:
 )
 def twostage(atomspec, basisspec):
     system = Molecule(atomspec, basisspec)
+    resultpack = {"atomspec": system.atomspec, "basisspec": basisspec}
 
     # reference calculations
-    for basis in "D":
-        print(f"{basis} contracted:", system.evaluate_reference(f"cc-pV{basis}Z"))
-        print(f"{basis} uncontracted:", system.evaluate_reference(f"unc-cc-pV{basis}Z"))
+    for nzeta in "DTQ5":
+        for contraction in ["", "unc"]:
+            basis = f"{contraction}cc-pV{nzeta}Z"
+            resultpack[basis] = system.evaluate_reference(basis)
 
     # first stage: evenly tempered basis set guess
     guess = system.initial_guess()
-    res = sco.minimize(lambda _: system.evaluate_tempered(_), guess)
-    print(f"First stage: {res.fun}")
-    print(system._tempered_to_basis(res.x))
+    parametrization = len(guess)
+    optimizer = ng.optimizers.NGOpt(
+        parametrization=parametrization, budget=10000, num_workers=os.cpu_count()
+    )
+    with futures.ProcessPoolExecutor(max_workers=optimizer.num_workers) as executor:
+        recommendation = optimizer.minimize(system.evaluate_tempered, executor=executor)
+    guess = recommendation.value
+    res = sco.minimize(system.evaluate_tempered, guess)
+    resultpack["tempered"] = res.fun
+    resultpack["tempered_basis"] = system._tempered_to_basis(res.x)
 
     # second stage: relax all coefficients from there
     guess = system.first_to_second(res.x)
-    res = sco.minimize(lambda _: system.evaluate_relaxed(_), guess)
-    print(f"Second stage: {res.fun}")
-    print(system._get_basis(res.x))
+    res = sco.minimize(system.evaluate_relaxed, guess)
+
+    resultpack["relaxed"] = res.fun
+    resultpack["relaxed_basis"] = system._relaxed_to_basis(res.x)
+
+    print(json.dumps(resultpack))
 
 
 if __name__ == "__main__":
