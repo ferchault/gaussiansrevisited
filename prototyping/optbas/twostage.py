@@ -125,21 +125,28 @@ class Molecule:
     default="Be:3.1;Li:2.1",
     help="element:# basis primitives in increasing angular momenta.",
 )
-def twostage(atomspec, basisspec):
+@click.option(
+    "--budget", default=100, help="Number of trial runs for the initial guess."
+)
+@click.option(
+    "--reference", default=False, help="Whether to do the reference calculations."
+)
+def twostage(atomspec, basisspec, budget, reference):
     system = Molecule(atomspec, basisspec)
     resultpack = {"atomspec": system.atomspec, "basisspec": basisspec}
 
     # reference calculations
-    for nzeta in "DTQ5":
-        for contraction in ["", "unc"]:
-            basis = f"{contraction}cc-pV{nzeta}Z"
-            resultpack[basis] = system.evaluate_reference(basis)
+    if reference:
+        for nzeta in "DTQ5":
+            for contraction in ["", "unc"]:
+                basis = f"{contraction}cc-pV{nzeta}Z"
+                resultpack[basis] = system.evaluate_reference(basis)
 
     # first stage: evenly tempered basis set guess
     guess = system.initial_guess()
     parametrization = len(guess)
     optimizer = ng.optimizers.NGOpt(
-        parametrization=parametrization, budget=10000, num_workers=os.cpu_count()
+        parametrization=parametrization, budget=budget, num_workers=os.cpu_count()
     )
     with futures.ProcessPoolExecutor(max_workers=optimizer.num_workers) as executor:
         recommendation = optimizer.minimize(system.evaluate_tempered, executor=executor)
